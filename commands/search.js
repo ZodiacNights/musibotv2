@@ -1,16 +1,17 @@
 const { Util, MessageEmbed } = require("discord.js");
 const ytdl = require("ytdl-core");
-const ytdlDiscord = require("ytdl-core-discord");
 const yts = require("yt-search");
-const fs = require("fs");
+const ytdlDiscord = require("ytdl-core-discord");
+const YouTube = require("youtube-sr");
 const sendError = require("../util/error");
+const fs = require("fs");
 
 module.exports = {
     info: {
-        name: "play",
-        description: "To play songs :D",
-        usage: "<YouTube_URL> | <song_name>",
-        aliases: ["p"],
+        name: "search",
+        description: "To search songs :D",
+        usage: "<song_name>",
+        aliases: ["sc"],
     },
 
     run: async function (client, message, args) {
@@ -22,51 +23,64 @@ module.exports = {
         if (!permissions.has("SPEAK")) return sendError("I cannot speak in this voice channel, make sure I have the proper permissions!", message.channel);
 
         var searchString = args.join(" ");
-        if (!searchString) return sendError("You didn't poivide want i want to play", message.channel);
-        const url = args[0] ? args[0].replace(/<(.+)>/g, "$1") : "";
+        if (!searchString) return sendError("You didn't poivide want i want to search", message.channel);
+
         var serverQueue = message.client.queue.get(message.guild.id);
-
-        let songInfo = null;
-        let song = null;
-        if (url.match(/^(https?:\/\/)?(www\.)?(m\.)?(youtube\.com|youtu\.?be)\/.+$/gi)) {
+        try {
+            var searched = await YouTube.search(searchString, { limit: 10 });
+            if (searched[0] == undefined) return sendError("Looks like i was unable to find the song on YouTube", message.channel);
+            let index = 0;
+            let embedPlay = new MessageEmbed()
+                .setColor("BLUE")
+                .setAuthor(`Results for \"${args.join(" ")}\"`, message.author.displayAvatarURL())
+                .setDescription(`${searched.map((video2) => `**\`${++index}\`  |** [\`${video2.title}\`](${video2.url}) - \`${video2.durationFormatted}\``).join("\n")}`)
+                .setFooter("Type the number of the song to add it to the playlist");
+            // eslint-disable-next-line max-depth
+            message.channel.send(embedPlay).then((m) =>
+                m.delete({
+                    timeout: 15000,
+                })
+            );
             try {
-                songInfo = await ytdl.getInfo(url);
-                if (!songInfo) return sendError("Looks like i was unable to find the song on YouTube", message.channel);
-                song = {
-                    id: songInfo.videoDetails.videoId,
-                    title: songInfo.videoDetails.title,
-                    url: songInfo.videoDetails.video_url,
-                    img: songInfo.player_response.videoDetails.thumbnail.thumbnails[0].url,
-                    duration: songInfo.videoDetails.lengthSeconds,
-                    ago: songInfo.videoDetails.publishDate,
-                    views: String(songInfo.videoDetails.viewCount).padStart(10, " "),
-                    req: message.author,
-                };
-            } catch (error) {
-                console.error(error);
-                return message.reply(error.message).catch(console.error);
+                var response = await message.channel.awaitMessages((message2) => message2.content > 0 && message2.content < 11, {
+                    max: 1,
+                    time: 20000,
+                    errors: ["time"],
+                });
+            } catch (err) {
+                console.error(err);
+                return message.channel.send({
+                    embed: {
+                        color: "RED",
+                        description: "Nothing has been selected within 20 seconds, the request has been canceled.",
+                    },
+                });
             }
-        } else {
-            try {
-                var searched = await yts.search(searchString);
-                if (searched.videos.length === 0) return sendError("Looks like i was unable to find the song on YouTube", message.channel);
-
-                songInfo = searched.videos[0];
-                song = {
-                    id: songInfo.videoId,
-                    title: Util.escapeMarkdown(songInfo.title),
-                    views: String(songInfo.views).padStart(10, " "),
-                    url: songInfo.url,
-                    ago: songInfo.ago,
-                    duration: songInfo.duration.toString(),
-                    img: songInfo.image,
-                    req: message.author,
-                };
-            } catch (error) {
-                console.error(error);
-                return message.reply(error.message).catch(console.error);
-            }
+            const videoIndex = parseInt(response.first().content);
+            var video = await searched[videoIndex - 1];
+        } catch (err) {
+            console.error(err);
+            return message.channel.send({
+                embed: {
+                    color: "RED",
+                    description: "🆘  **|**  I could not obtain any search results",
+                },
+            });
         }
+
+        response.delete();
+        var songInfo = video;
+
+        const song = {
+            id: songInfo.id,
+            title: Util.escapeMarkdown(songInfo.title),
+            views: String(songInfo.views).padStart(10, " "),
+            ago: songInfo.uploadedAt,
+            duration: songInfo.durationFormatted,
+            url: `https://www.youtube.com/watch?v=${songInfo.id}`,
+            img: songInfo.thumbnail.url,
+            req: message.author,
+        };
 
         if (serverQueue) {
             serverQueue.songs.push(song);
@@ -97,7 +111,7 @@ module.exports = {
             const queue = message.client.queue.get(message.guild.id);
             if (!song) {
                 sendError(
-                    "Leaving the voice channel because I think there are no songs in the queue.",
+                    "Leaving the voice channel because I think there are no songs in the queue. If you like the bot stay 24/7 in voice channel go to `commands/play.js` and remove the line number 61\n\nThank you for using my code! [GitHub](https://github.com/SudhanPlayz/Discord-MusicBot)",
                     message.channel
                 );
                 message.guild.me.voice.channel.leave(); //If you want your bot stay in vc 24/7 remove this line :D
@@ -117,8 +131,8 @@ module.exports = {
                     }
                 });
             }
-            queue.connection.on("disconnect", () => message.client.queue.delete(message.guild.id));
 
+            queue.connection.on("disconnect", () => message.client.queue.delete(message.guild.id));
             const dispatcher = queue.connection.play(ytdl(song.url, { quality: "highestaudio", highWaterMark: 1 << 25, type: "opus" })).on("finish", () => {
                 const shiffed = queue.songs.shift();
                 if (queue.loop === true) {
@@ -142,6 +156,7 @@ module.exports = {
         try {
             const connection = await channel.join();
             queueConstruct.connection = connection;
+            channel.guild.voice.setSelfDeaf(true);
             play(queueConstruct.songs[0]);
         } catch (error) {
             console.error(`I could not join the voice channel: ${error}`);
